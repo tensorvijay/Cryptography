@@ -1,0 +1,136 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+#include <math.h>
+
+#define SECRET_KEY_SIZE 16
+#define MODULUS 101      // A chosen modulus for encryption
+#define THREAD_COUNT 2
+#define MESSAGE_LENGTH 64 // Length of each message part
+
+typedef struct {
+    int *a;                // The vector a
+    int *s;                // The secret key s
+    double e;             // The error term e
+    double *result;       // Result for each thread
+    int thread_id;        // Thread ID for identification
+    char *message_part;   // Message part to encrypt
+    double b;             // b value used in decryption
+} ThreadData;
+
+// Function to generate a random integer in [0, q-1]
+int random_int(int q) {
+    return rand() % q;
+}
+
+// Inner product function ⟨a, s⟩
+double inner_product(int *a, int *s, int n) {
+    double sum = 0;
+    for (int i = 0; i < n; i++) {
+        sum += a[i] * s[i];
+    }
+    return sum;
+}
+
+// Function to encrypt a message part
+void *encrypt(void *arg) {
+    ThreadData *data = (ThreadData *)arg;
+    int *a = data->a;
+    int *s = data->s;
+
+    // Compute t = ⟨a, s⟩ / q + e
+    double t = inner_product(a, s, SECRET_KEY_SIZE) / (double)MODULUS + data->e;
+    data->result[data->thread_id] = t;
+
+    printf("Thread %d: Encrypted value t: %lf for message part: %s\n", data->thread_id, t, data->message_part);
+    return NULL;
+}
+
+// Function to decrypt the message
+void *decrypt(void *arg) {
+    ThreadData *data = (ThreadData *)arg;
+    
+    // Calculate b = ⟨a, s⟩ / q + e (retrieved from encryption)
+    double b = data->result[data->thread_id];
+    double estimate = b - inner_product(data->a, data->s, SECRET_KEY_SIZE) / (double)MODULUS;
+
+    // Decrypting based on the distance from 0 and 0.5
+    int decrypted_value = (estimate < 0.5) ? 0 : 1;
+
+    printf("Thread %d: Decrypted value: %d for message part: %s\n", data->thread_id, decrypted_value, data->message_part);
+    return NULL;
+}
+
+int main() {
+    srand(time(NULL)); // Seed the random number generator
+
+    // Initialize the secret key s
+    int s[SECRET_KEY_SIZE];
+    for (int i = 0; i < SECRET_KEY_SIZE; i++) {
+        s[i] = random_int(MODULUS);
+    }
+
+    // Define the large number as a string
+    char large_number[] = "10101010101010101010101010001010001010001001";
+    int length = strlen(large_number);
+    
+    // Split the large number into two parts for two threads
+    char message_parts[THREAD_COUNT][MESSAGE_LENGTH + 1];
+    strncpy(message_parts[0], large_number, length / THREAD_COUNT);
+    message_parts[0][length / THREAD_COUNT] = '\0'; // Null-terminate the string
+
+    strncpy(message_parts[1], large_number + (length / THREAD_COUNT), length - (length / THREAD_COUNT));
+    message_parts[1][length - (length / THREAD_COUNT)] = '\0'; // Null-terminate the string
+
+    // Initialize the message vector a divided into two parts
+    int a[THREAD_COUNT][SECRET_KEY_SIZE];
+    for (int i = 0; i < THREAD_COUNT; i++) {
+        for (int j = 0; j < SECRET_KEY_SIZE; j++) {
+            a[i][j] = random_int(MODULUS);
+        }
+    }
+
+    // Initialize thread data
+    pthread_t threads[THREAD_COUNT];
+    ThreadData thread_data[THREAD_COUNT];
+
+    // Generate random error terms
+    double errors[THREAD_COUNT];
+    for (int i = 0; i < THREAD_COUNT; i++) {
+        errors[i] = ((double)random_int(100) / 100.0) - 0.5; // Random error in [-0.5, 0.5]
+    }
+
+    // Encryption phase
+    for (int i = 0; i < THREAD_COUNT; i++) {
+        thread_data[i].a = a[i];
+        thread_data[i].s = s;
+        thread_data[i].e = errors[i];
+        thread_data[i].result = (double *)malloc(THREAD_COUNT * sizeof(double));
+        thread_data[i].thread_id = i;
+        thread_data[i].message_part = message_parts[i]; // Set the message part
+
+        pthread_create(&threads[i], NULL, encrypt, &thread_data[i]);
+    }
+
+    // Wait for encryption threads to finish
+    for (int i = 0; i < THREAD_COUNT; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    // Decryption phase
+    for (int i = 0; i < THREAD_COUNT; i++) {
+        // Store the computed b for decryption
+        thread_data[i].b = thread_data[i].result[i]; // Here we assign the value to b
+
+        pthread_create(&threads[i], NULL, decrypt, &thread_data[i]);
+    }
+
+    // Wait for decryption threads to finish
+    for (int i = 0; i < THREAD_COUNT; i++) {
+        pthread_join(threads[i], NULL);
+        free(thread_data[i].result); // Free the allocated memory
+    }
+
+    return 0;
+}
